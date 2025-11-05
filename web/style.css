@@ -1,0 +1,31 @@
+* {
+    font-family: 'IBM Plex Mono', monospace;
+}
+
+/* Desktop / landscape default: half width, almost full height */
+.mnist-canvas {
+  width: 30vw;
+  height: auto;
+  aspect-ratio: 1 / 1;   /* keeps the box square visually */
+}
+
+/* Phones in portrait: full width, half height */
+@media (orientation: portrait) {
+  .mnist-canvas {
+    width: 80vw;
+    height: auto;
+    aspect-ratio: 1 / 1;
+  }
+}
+
+/* Optional: prevent the wrapper from exploding on huge screens */
+.mnist-canvas {
+  max-width: 90vmin;
+  max-height: 90vmin;
+  margin-inline: auto;   /* center horizontally */
+}
+
+.tool-btn.active {
+  transform: scale(1.05);
+  font-weight: bold;
+}

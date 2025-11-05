@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MNIST Digit Classifier</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="./style.css" />
+    <style>
+      /* crisp preview pixels */
+      #preview28 { image-rendering: pixelated; }
+    </style>
+  </head>
+
+  <body class="min-h-dvh bg-slate-950 text-slate-100">
+    <div class="max-w-5xl mx-auto p-6">
+      <h1 class="text-center text-3xl font-semibold tracking-wide mb-6">
+        MNIST Digit Classifier
+      </h1>
+
+      <p class="text-center text-muted-foreground">
+        Select a model, then use the <strong>Pen</strong> to draw a single digit (0–9).
+      </p>
+
+      <div class="bg-slate-800/70 border border-slate-700 rounded-2xl p-3 flex gap-4 items-center">
+        <div class="flex-1">
+          <select
+            id="modelSelect"
+            class="w-full px-4 py-3 rounded-xl bg-slate-200 text-slate-900 border border-slate-400 shadow-inner"
+          >
+            <option value="mlp">mnist_mlp</option>
+            <option value="cnn">mnist_convnet</option>
+          </select>
+        </div>
+
+        <button
+          id="predictBtn"
+          class="px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold"
+        >
+          Run Model
+        </button>
+      </div>
+
+      <div class="mt-8 grid grid-cols-1 md:grid-cols-[1fr,260px] gap-8 items-start">
+        <!-- Drawing canvas (now black background) -->
+        <div class="bg-black mnist-canvas flex items-center justify-center rounded-xl">
+          <canvas id="canvas" class="rounded-xl shadow-inner w-full h-full"></canvas>
+        </div>
+
+        <!-- Tools + preview -->
+        <div class="flex flex-col gap-6">
+          <button
+            id="penBtn"
+            class="tool-btn px-6 py-4 rounded-xl bg-slate-200 text-blue-700 font-semibold border border-slate-400 transition-transform duration-150"
+          >
+            Pen (white)
+          </button>
+
+          <button
+            id="eraserBtn"
+            class="tool-btn px-6 py-4 rounded-xl bg-slate-200 text-blue-700 font-semibold border border-slate-400 transition-transform duration-150"
+          >
+            Eraser (black)
+          </button>
+
+          <button
+            id="clearBtn"
+            class="px-6 py-4 rounded-xl bg-slate-200 text-blue-700 font-semibold border border-slate-400 transition-transform duration-50 active:scale-110"
+          >
+            Clear
+          </button>
+
+          <div class="space-y-2">
+            <div class="text-xs text-slate-400">Model input (28×28)</div>
+            <div class="bg-white rounded-lg border border-slate-300 p-2 w-full flex items-center justify-center">
+              <canvas id="preview28" width="140" height="140" class="w-full h-auto"></canvas>
+            </div>
+          </div>
+
+          <div class="text-sm text-slate-400 mt-2 space-y-1">
+            <div id="loadTime"></div>
+            <div id="predTime"></div>
+            <div id="predDigit" class="text-lg font-semibold"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="probs" class="p-10 mt-4 grid grid-cols-10 gap-2"></div>
+    </div>
+
+    <script type="module">
+      // ----- DOM refs -----
+      const canvas     = document.getElementById('canvas');
+      const ctx        = canvas.getContext('2d', { willReadFrequently: true });
+      const modelSelect= document.getElementById('modelSelect');
+      const predictBtn = document.getElementById('predictBtn');
+      const penBtn     = document.getElementById('penBtn');
+      const eraserBtn  = document.getElementById('eraserBtn');
+      const clearBtn   = document.getElementById('clearBtn');
+      const loadTimeEl = document.getElementById('loadTime');
+      const predTimeEl = document.getElementById('predTime');
+      const preDigitEl = document.getElementById('predDigit');
+      const probsRoot  = document.getElementById('probs');
+      const preview    = document.getElementById('preview28');
+      const pctx       = preview.getContext('2d', { willReadFrequently: true });
+
+      const MODEL_MAP = {
+        mlp: { js: "./models/mlp/mnist_mlp.js",   weights: "./models/mlp/mnist_mlp.webgpu.safetensors" },
+        cnn: { js: "./models/cnn/mnist_convnet.js", weights: "./models/cnn/mnist_convnet.webgpu.safetensors" },
+      };
+
+      // ----- drawing setup (BLACK bg, WHITE pen) -----
+      let tool = "pen";
+      let drawing = false;
+
+      function fillBlack() {
+        ctx.globalCompositeOperation = "source-over";
+        ctx.fillStyle = "#000000";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+
+      function fitCanvas() {
+        const parent = canvas.parentElement;
+        canvas.width  = parent.clientWidth;
+        canvas.height = parent.clientHeight;
+
+        ctx.lineCap   = "round";
+        ctx.lineJoin  = "round";
+        ctx.lineWidth = Math.max(10, Math.floor(canvas.width / 20));
+
+        fillBlack();
+      }
+      window.addEventListener("resize", fitCanvas);
+      fitCanvas();
+
+      let lastX = 0, lastY = 0;
+
+      canvas.addEventListener("mousedown", e => {
+        const r = canvas.getBoundingClientRect();
+        lastX = e.clientX - r.left;
+        lastY = e.clientY - r.top;
+        drawing = true;
+      });
+
+      canvas.addEventListener("mousemove", e => {
+        if (!drawing) return;
+        const r = canvas.getBoundingClientRect();
+        const x = e.clientX - r.left;
+        const y = e.clientY - r.top;
+
+        ctx.globalCompositeOperation = "source-over";
+        ctx.strokeStyle = (tool === "pen") ? "#FFFFFF" : "#000000"; // white pen, black eraser
+        ctx.beginPath();
+        ctx.moveTo(lastX, lastY);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+
+        lastX = x; lastY = y;
+      });
+
+      ["mouseup","mouseleave"].forEach(ev => canvas.addEventListener(ev, () => {
+        if (drawing) { drawing = false; schedulePredict(); }
+      }));
+
+      function setTool(t) {
+        tool = t;
+        [penBtn, eraserBtn].forEach(b => b.classList.remove("ring","ring-blue-600"));
+        (tool === "pen" ? penBtn : eraserBtn).classList.add("ring","ring-blue-600");
+      }
+      setTool("pen");
+      penBtn.addEventListener("click", () => setTool("pen"));
+      eraserBtn.addEventListener("click", () => setTool("eraser"));
+
+      clearBtn.addEventListener("click", () => {
+        fillBlack();
+        zeroBars();
+        preDigitEl.textContent = "→";
+        predTimeEl.textContent = "";
+        // clear preview
+        pctx.fillStyle = "#ffffff";
+        pctx.fillRect(0, 0, preview.width, preview.height);
+      });
+
+      // ----- bars -----
+      const bars = (() => {
+        const arr = [];
+        probsRoot.innerHTML = "";
+        for (let i = 0; i < 10; i++) {
+          const wrap = document.createElement("div");
+          wrap.className = "flex flex-col items-center gap-1";
+          const bar = document.createElement("div");
+          bar.className = "w-6 bg-blue-500 rounded";
+          bar.style.height = "4px";
+          const label = document.createElement("span");
+          label.className = "text-xs text-slate-400";
+          label.textContent = String(i);
+          wrap.appendChild(bar); wrap.appendChild(label);
+          probsRoot.appendChild(wrap);
+          arr.push(bar);
+        }
+        return arr;
+      })();
+
+      function zeroBars(){
+        for (let i=0;i<10;i++){
+          bars[i].style.height="4px";
+          bars[i].style.backgroundColor="#3B82F6";
+          bars[i].textContent="";
+          bars[i].title="";
+        }
+      }
+      function updateBars(probs){
+        const bestIdx = probs.indexOf(Math.max(...probs));
+        for (let i=0;i<10;i++){
+          const p = probs[i] ?? 0;
+          const h = Math.round(p*100);
+          bars[i].style.height = `${Math.max(4,h)}px`;
+          bars[i].style.backgroundColor = i===bestIdx ? "#60A5FA" : "#3B82F6";
+          bars[i].title = `${(p*100).toFixed(1)}%`;
+          bars[i].textContent = `${Math.round(p*100)}%`;
+        }
+      }
+
+      // ----- model loading -----
+      let runner = null, currentModelKey = "mlp";
+      function setLoadingUI(loading){
+        predictBtn.disabled = loading;
+        predictBtn.textContent = loading ? "Loading…" : "Run Model";
+      }
+      async function getWebGPUDevice(){
+        if (!("gpu" in navigator)) throw new Error("WebGPU not available.");
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) throw new Error("No WebGPU adapter found.");
+        return adapter.requestDevice();
+      }
+      async function loadModel(){
+        setLoadingUI(true);
+        try{
+          const { js, weights } = MODEL_MAP[currentModelKey];
+          const mod = await import(js);
+          const device = await getWebGPUDevice();
+          const api = mod.default || mod;
+          if (!api.load) throw new Error("Module has no .load(device, weights)");
+          const runFunc = await api.load(device, weights);
+          if (typeof runFunc !== "function") throw new Error("load(...) didn't return a function");
+          runner = {
+            run: async (input) => {
+              const outList = await runFunc(input);
+              const out = Array.isArray(outList) ? outList[0] : outList;
+              return out instanceof Float32Array ? out : new Float32Array(out);
+            }
+          };
+          const warm = new Float32Array(28*28); warm.fill(-1);
+          await runner.run(warm);
+        } finally { setLoadingUI(false); }
+      }
+      modelSelect.addEventListener("change", async e => {
+        currentModelKey = e.target.value; runner = null;
+        try { await loadModel(); if (!canvasIsBlank()) await predictOnce(); }
+        catch(err){ console.error(err); alert(`Failed to load ${currentModelKey}: ${err.message}`); }
+      });
+      predictBtn.addEventListener("click", async () => { if (!runner) await loadModel(); await predictOnce(); });
+
+      // ----- helpers -----
+      function canvasIsBlank(){
+        const { width, height } = canvas;
+        const data = ctx.getImageData(0,0,width,height).data;
+        for (let i=0;i<data.length;i+=4){
+          const r=data[i], g=data[i+1], b=data[i+2], a=data[i+3];
+          // blank means fully black pixels only
+          if (a!==0 && (r!==0 || g!==0 || b!==0)) return false;
+        }
+        return true;
+      }
+
+      // PREPROCESS for black BG, white strokes:
+      // produce Float32Array(784) in [-1,1], where background ≈ -1 and ink ≈ +1
+      function preprocessCanvas(){
+        const SIZE = 28;
+
+        // downscale with letterbox
+        const sw = canvas.width, sh = canvas.height;
+        const k  = Math.min(SIZE/sw, SIZE/sh);
+        const dw = Math.max(1, Math.floor(sw*k));
+        const dh = Math.max(1, Math.floor(sh*k));
+        const dx = Math.floor((SIZE - dw)/2), dy = Math.floor((SIZE - dh)/2);
+
+        const base = document.createElement("canvas");
+        base.width = SIZE; base.height = SIZE;
+        const bctx = base.getContext("2d", { willReadFrequently: true });
+        // start from BLACK base to match drawing bg
+        bctx.fillStyle = "#000000";
+        bctx.fillRect(0,0,SIZE,SIZE);
+        bctx.imageSmoothingEnabled = false;
+        bctx.imageSmoothingQuality = "low";
+        bctx.drawImage(canvas, 0,0,sw,sh, dx,dy,dw,dh);
+
+        // grayscale (no inversion): white pen -> high value
+        const img = bctx.getImageData(0,0,SIZE,SIZE);
+        const data = img.data;
+        const ink01 = new Float32Array(SIZE*SIZE);
+        for (let y=0;y<SIZE;y++){
+          for (let x=0;x<SIZE;x++){
+            const i = (y*SIZE + x)*4;
+            const g = (data[i] + data[i+1] + data[i+2]) / 3; // 0..255
+            ink01[y*SIZE + x] = g / 255; // 0..1 (0=black bg, 1=white stroke)
+          }
+        }
+
+        // bbox
+        let minx=SIZE,miny=SIZE,maxx=-1,maxy=-1;
+        for (let y=0;y<SIZE;y++){
+          for (let x=0;x<SIZE;x++){
+            if (ink01[y*SIZE+x] > 0.1){ // threshold on brightness
+              if (x<minx) minx=x; if (x>maxx) maxx=x;
+              if (y<miny) miny=y; if (y>maxy) maxy=y;
+            }
+          }
+        }
+        if (maxx<0){
+          const out = new Float32Array(SIZE*SIZE); out.fill(-1); return out;
+        }
+
+        // crop -> scale longest side to 20
+        const bw = Math.max(1, maxx-minx+1);
+        const bh = Math.max(1, maxy-miny+1);
+        const scale = 20 / Math.max(bw,bh);
+        const cw = Math.max(1, Math.floor(bw*scale));
+        const ch = Math.max(1, Math.floor(bh*scale));
+
+        // build crop image from ink01
+        const crop = document.createElement("canvas");
+        crop.width = bw; crop.height = bh;
+        const cctx = crop.getContext("2d", { willReadFrequently: true });
+        const cropImg = cctx.createImageData(bw,bh);
+        for (let y=0;y<bh;y++){
+          for (let x=0;x<bw;x++){
+            const v = ink01[(miny+y)*SIZE + (minx+x)];
+            const g = Math.round(v*255);
+            const i = (y*bw + x)*4;
+            cropImg.data[i] = cropImg.data[i+1] = cropImg.data[i+2] = g;
+            cropImg.data[i+3] = 255;
+          }
+        }
+        cctx.putImageData(cropImg,0,0);
+
+        const scaled = document.createElement("canvas");
+        scaled.width = cw; scaled.height = ch;
+        const sctx = scaled.getContext("2d", { willReadFrequently: true });
+        sctx.imageSmoothingEnabled = false;
+        sctx.drawImage(crop, 0,0,bw,bh, 0,0,cw,ch);
+
+        // paste centered by CoM
+        const tmp = new Float32Array(SIZE*SIZE);
+        let sum=0,sx=0,sy=0;
+        for (let y=0;y<ch;y++){
+          for (let x=0;x<cw;x++){
+            const g = sctx.getImageData(x,y,1,1).data[0]/255; // 0..1
+            const X = x + Math.floor((SIZE-cw)/2);
+            const Y = y + Math.floor((SIZE-ch)/2);
+            tmp[Y*SIZE + X] = g;
+            if (g>0.05){ sum += g; sx += g*X; sy += g*Y; }
+          }
+        }
+        let cx = SIZE/2, cy = SIZE/2;
+        if (sum>0){ cx = sx/sum; cy = sy/sum; }
+        const tx = Math.round(SIZE/2 - cx);
+        const ty = Math.round(SIZE/2 - cy);
+
+        const out = new Float32Array(SIZE*SIZE);
+        out.fill(-1); // background -1 (black)
+        for (let y=0;y<SIZE;y++){
+          for (let x=0;x<SIZE;x++){
+            const v = tmp[y*SIZE + x];
+            if (v<=0) continue;
+            const X = x+tx, Y = y+ty;
+            if (X>=0 && X<SIZE && Y>=0 && Y<SIZE){
+              const clipped = Math.min(1, Math.max(0, v));
+              out[Y*SIZE + X] = clipped*2 - 1; // 0..1 -> -1..+1
+            }
+          }
+        }
+        return out;
+      }
+
+        // preview: map [-1,1] so background shows white, ink black (easy to see)
+        function renderPreview(buf){
+            if (!pctx || !buf) return;
+            const W = 28, H = 28;
+
+            // draw crisp blocks
+            pctx.imageSmoothingEnabled = false;
+
+            // pure black background (matches v ≈ -1)
+            pctx.fillStyle = "#000";
+            pctx.fillRect(0, 0, preview.width, preview.height);
+
+            const img = pctx.createImageData(preview.width, preview.height);
+            const data = img.data;
+
+            const sx = preview.width  / W;
+            const sy = preview.height / H;
+
+            // AS-IS mapping: v∈[-1,1] -> g∈[0,255] with no flip
+            // v = -1 -> 0 (black), v = +1 -> 255 (white)
+            for (let y = 0; y < H; y++) {
+                for (let x = 0; x < W; x++) {
+                    const v = buf[y * W + x] ?? -1;
+                    const g = Math.max(0, Math.min(255, Math.round(((v + 1) / 2) * 255)));
+
+                    const x0 = Math.floor(x * sx), x1 = Math.floor((x + 1) * sx);
+                    const y0 = Math.floor(y * sy), y1 = Math.floor((y + 1) * sy);
+                    for (let yy = y0; yy < y1; yy++) {
+                        for (let xx = x0; xx < x1; xx++) {
+                            const i = (yy * preview.width + xx) * 4;
+                            data[i] = data[i + 1] = data[i + 2] = g;
+                            data[i + 3] = 255;
+                        }
+                    }
+                }
+            }
+            pctx.putImageData(img, 0, 0);
+        }
+
+
+      // softmax etc.
+      const TEMP = 1.0;
+      function stableSoftmax(logits){
+        if (!logits || logits.length===0) return new Float32Array(0);
+        let maxv = -Infinity; for (let v of logits) if (Number.isFinite(v) && v>maxv) maxv=v;
+        const exps = new Float32Array(logits.length);
+        let sum=0; for (let i=0;i<logits.length;i++){ const v=Math.exp((logits[i]-maxv)/TEMP); exps[i]=v; sum+=v; }
+        if (sum===0){ exps.fill(1/exps.length); return exps; }
+        for (let i=0;i<exps.length;i++) exps[i]/=sum;
+        return exps;
+      }
+      function argmax(a){ if (!a||a.length===0) return -1; let i0=0,m=a[0]; for (let i=1;i<a.length;i++) if (a[i]>m){m=a[i]; i0=i;} return i0; }
+
+      // model I/O
+      let isLoading=false;
+      async function predictOnce(){
+        if (!runner) await loadModel();
+        const input = preprocessCanvas();
+        renderPreview(input);
+        const t0 = performance.now();
+        const logits = await runner.run(input);
+        const dt = Math.round(performance.now()-t0);
+        if (predTimeEl) predTimeEl.textContent = `${dt} ms`;
+        const probs = stableSoftmax(logits);
+        const best = argmax(probs);
+        if (preDigitEl) preDigitEl.textContent = `${best} (${(probs[best]*100).toFixed(1)}%)`;
+        updateBars(probs);
+      }
+
+      let predictDebounce=null;
+      function schedulePredict(){ clearTimeout(predictDebounce); predictDebounce=setTimeout(predictOnce,120); }
+    </script>
+  </body>
+</html>
