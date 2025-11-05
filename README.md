@@ -7,6 +7,9 @@ Real-time handwritten digit recognition in the browser using Tinygrad-trained mo
 
 #### Live Demo Link: #####
 
+Project demo: [MNIST Web App]([https://yourusername.github.io/mnist_Project/](https://ryu-292.github.io/MNIST_DigitClassifier/))
+
+https://ryu-292.github.io/MNIST_DigitClassifier/
 
 This project trains a handwritten-digit recognition model using TinyGrad, and then runs it directly in the browser using WebGPU. Instead of sending anything to a server, the whole model lives right on the page and runs on your GPU in real time.
 
@@ -105,4 +108,5 @@ Try differents hyperparameters
 
 For detailed training configurations and results, see the hyperparameter log:  
 ➡️ [HYPERPARAMETERS.md](./docs/HYPERPARAMETERS.md)
+
 
