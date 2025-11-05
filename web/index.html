@@ -135,32 +135,49 @@
 
       let lastX = 0, lastY = 0;
 
-      canvas.addEventListener("mousedown", e => {
+      function getPos(e) {
         const r = canvas.getBoundingClientRect();
-        lastX = e.clientX - r.left;
-        lastY = e.clientY - r.top;
+        return { x: e.clientX - r.left, y: e.clientY - r.top };
+      }
+
+      // POINTER EVENTS (handle mouse + touch + pen)
+      canvas.addEventListener("pointerdown", e => {
+        e.preventDefault();
+        const { x, y } = getPos(e);
         drawing = true;
+        try { canvas.setPointerCapture(e.pointerId); } catch {}
+        lastX = x;
+        lastY = y;
       });
 
-      canvas.addEventListener("mousemove", e => {
+      canvas.addEventListener("pointermove", e => {
         if (!drawing) return;
-        const r = canvas.getBoundingClientRect();
-        const x = e.clientX - r.left;
-        const y = e.clientY - r.top;
+        e.preventDefault();
+        const { x, y } = getPos(e);
 
         ctx.globalCompositeOperation = "source-over";
-        ctx.strokeStyle = (tool === "pen") ? "#FFFFFF" : "#000000"; // white pen, black eraser
+        ctx.strokeStyle = (tool === "pen") ? "#FFFFFF" : "#000000";
+
         ctx.beginPath();
         ctx.moveTo(lastX, lastY);
         ctx.lineTo(x, y);
         ctx.stroke();
 
-        lastX = x; lastY = y;
+        lastX = x;
+        lastY = y;
       });
 
-      ["mouseup","mouseleave"].forEach(ev => canvas.addEventListener(ev, () => {
-        if (drawing) { drawing = false; schedulePredict(); }
-      }));
+      function endStroke(e) {
+        if (!drawing) return;
+        drawing = false;
+        try { canvas.releasePointerCapture(e.pointerId); } catch {}
+        schedulePredict();
+      }
+
+      canvas.addEventListener("pointerup", endStroke);
+      canvas.addEventListener("pointercancel", endStroke);
+      canvas.addEventListener("pointerleave", endStroke);
+
 
       function setTool(t) {
         tool = t;

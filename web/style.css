@@ -29,3 +29,5 @@
   transform: scale(1.05);
   font-weight: bold;
 }
+
+#canvas { touch-action: none; }
